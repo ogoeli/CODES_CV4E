@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # -------- settings --------
-TIF = r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DROUGHT_TEST_CLIPPED\DROUGHT_TEST_CLIPPED.tif"
+TIF = r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\Train\CLIPPED\DROUGHT_TRAIN_CLIPPED\DROUGHT_TRAIN_CLIPPED.tif"
 BAND = 13
 BINS = 256
 OUTDIR = "outputs"
@@ -45,7 +45,7 @@ def main(fp=TIF, band=BAND, bins=BINS):
         plt.ylabel("Pixel count")
         plt.title(f"{os.path.basename(fp)} – Band {band}")
         os.makedirs(OUTDIR, exist_ok=True)
-        out = f"{OUTDIR}/band{band}_hist_droughtTest.png"
+        out = f"{OUTDIR}/band{band}_hist_droughtTrain.png"
         plt.tight_layout()
         plt.savefig(out, dpi=150)
         print(f"Saved: {out}")
