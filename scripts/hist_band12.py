@@ -1,74 +1,54 @@
 #!/usr/bin/env python3
-import os
-import sys
+import sys, os
+import rasterio
+import numpy as np
+import matplotlib.pyplot as plt
 
-try:
-    import rasterio
-    import numpy as np
-    import matplotlib.pyplot as plt
-except Exception:
-    sys.stderr.write("Missing dependencies. Install with: pip install rasterio numpy matplotlib\n")
-    sys.exit(2)
+# -------- settings --------
+TIF = r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DROUGHT_TEST_CLIPPED\DROUGHT_TEST_CLIPPED.tif"
+BAND = 13
+BINS = 256
+OUTDIR = "outputs"
+# --------------------------
 
-SEARCH_DIR = os.path.join("GitIgnore", "SENTINEL_TIME_SERIES")
-
-def find_tifs(path):
-    if not os.path.isdir(path):
-        return []
-    return [os.path.join(path, f) for f in sorted(os.listdir(path)) if f.lower().endswith('.tif')]
-
-def main():
-    fp = sys.argv[1] if len(sys.argv) > 1 else None
-    tifs = find_tifs(SEARCH_DIR)
-    if not tifs and not fp:
-        sys.stderr.write(f"No .tif files found in {SEARCH_DIR}\n")
-        sys.exit(1)
-
-    if not fp:
-        # pick first file that has >=12 bands, otherwise first file
-        chosen = None
-        for c in tifs:
-            try:
-                with rasterio.open(c) as src:
-                    if src.count >= 12:
-                        chosen = c
-                        break
-            except Exception:
-                continue
-        if chosen is None:
-            chosen = tifs[0]
-            print(f"No file with >=12 bands found; using first file: {chosen}")
-        fp = chosen
-
+def main(fp=TIF, band=BAND, bins=BINS):
     with rasterio.open(fp) as src:
-        print(f"Opened {fp} (bands={src.count})")
-        band_idx = 12
-        if src.count < band_idx:
-            sys.stderr.write(f"File has only {src.count} bands; cannot read band {band_idx}\n")
-            sys.exit(1)
-        data = src.read(band_idx)
-        nodata = None
-        if src.nodatavals:
-            nodata = src.nodatavals[band_idx-1]
+        if src.count < band:
+            raise ValueError(f"Only {src.count} bands in file")
+
+        data = src.read(band).astype("float32")
+        nodata = src.nodatavals[band-1]
+
         if nodata is not None:
-            data = np.where(data == nodata, np.nan, data)
-        data = data.astype('float32')
+            data[data == nodata] = np.nan
+
         valid = data[np.isfinite(data)]
         if valid.size == 0:
-            sys.stderr.write("No valid pixels in band\n")
-            sys.exit(1)
+            raise ValueError("No valid pixels")
 
-        plt.figure(figsize=(8,4))
-        plt.hist(valid.flatten(), bins=256)
-        plt.title(f"Histogram - {os.path.basename(fp)} - Band {band_idx}")
-        plt.xlabel("DN / Reflectance")
+        print(f"Band {band}")
+        print(f"  Mean   : {valid.mean():.4f}")
+        print(f"  Median : {np.median(valid):.4f}")
+        print(f"  Std    : {valid.std():.4f}")
+        print(f"  Pixels : {valid.size}")
+
+        vals, counts = np.unique(valid.astype(int), return_counts=True)
+
+        plt.figure(figsize=(7,4))
+        if vals.size <= 50:
+            plt.bar(vals.astype(str), counts)
+            plt.xlabel("Class value")
+        else:
+            plt.hist(valid, bins=bins)
+            plt.xlabel("Value")
+
         plt.ylabel("Pixel count")
-        outdir = os.path.join("outputs")
-        os.makedirs(outdir, exist_ok=True)
-        outpath = os.path.join(outdir, "band12_hist.png")
+        plt.title(f"{os.path.basename(fp)} – Band {band}")
+        os.makedirs(OUTDIR, exist_ok=True)
+        out = f"{OUTDIR}/band{band}_hist_droughtTest.png"
         plt.tight_layout()
-        plt.savefig(outpath, dpi=150)
-        print(f"Saved histogram to {outpath}")
+        plt.savefig(out, dpi=150)
+        print(f"Saved: {out}")
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
