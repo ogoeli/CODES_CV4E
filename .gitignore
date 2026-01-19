@@ -1,0 +1,6 @@
+
+_pycache_/ 
+
+#Ignore all files in the in this folder
+#another way to do it is just list the individual files/folders in the .gitignore file
+GitIgnore/
