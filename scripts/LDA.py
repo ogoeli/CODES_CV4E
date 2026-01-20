@@ -110,4 +110,65 @@ plt.grid(True)
 plt.show()
 
 
-print(pca.explained_variance_ratio_[:3])
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+# ================= LDA =================
+lda = LinearDiscriminantAnalysis(n_components=2)
+X_lda = lda.fit_transform(X_scaled, y_class)
+
+print("LDA completed")
+
+
+class_colors = {0: "green", 1: "red", 2: "orange"}
+class_names  = {0: "Healthy", 1: "DFB", 2: "Drought"}
+split_markers = {0: "o", 1: "^"}  # train/test
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# -------- PCA --------
+for cls in [0, 1, 2]:
+    for split in [0, 1]:
+        mask = (y_class == cls) & (y_split == split)
+        axes[0].scatter(
+            X_pca[mask, 0],
+            X_pca[mask, 1],
+            c=class_colors[cls],
+            marker=split_markers[split],
+            s=6,
+            alpha=0.6
+        )
+
+axes[0].set_title("PCA (unsupervised)")
+axes[0].set_xlabel("PC1")
+axes[0].set_ylabel("PC2")
+axes[0].grid(True)
+
+# -------- LDA --------
+for cls in [0, 1, 2]:
+    for split in [0, 1]:
+        mask = (y_class == cls) & (y_split == split)
+        axes[1].scatter(
+            X_lda[mask, 0],
+            X_lda[mask, 1],
+            c=class_colors[cls],
+            marker=split_markers[split],
+            s=6,
+            alpha=0.6,
+            label=f"{class_names[cls]} - {'Train' if split == 0 else 'Test'}"
+        )
+
+axes[1].set_title("LDA (supervised)")
+axes[1].set_xlabel("LD1")
+axes[1].set_ylabel("LD2")
+axes[1].grid(True)
+
+handles, labels = axes[1].get_legend_handles_labels()
+fig.legend(handles[:6], labels[:6], loc="lower center", ncol=3)
+
+plt.tight_layout()
+plt.show()
+
+
+#Check class centroids in LDA space
+#for cls in [0,1,2]:
+#    print(cls, X_lda[y_class == cls].mean(axis=0))
