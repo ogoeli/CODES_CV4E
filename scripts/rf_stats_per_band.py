@@ -173,13 +173,12 @@ print(classification_report(
 ))
 
 # =====================================================
-# 9. CONFUSION MATRIX (RAW COUNTS)
+# 9. CONFUSION MATRIX
 # =====================================================
 
-cm = confusion_matrix(y_true_all, y_pred_all, labels=LABELS)
+cm = confusion_matrix(y_true_all, y_pred_all, normalize="true")
 ConfusionMatrixDisplay(cm, display_labels=CLASS_NAMES).plot(
-    cmap="Blues", values_format="d"
+    cmap="Blues", values_format=".2f"
 )
-plt.title("Confusion Matrix (Raw Counts)")
+plt.title("Normalized Confusion Matrix (Recall)")
 plt.show()
-
