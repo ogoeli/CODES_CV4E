@@ -1,4 +1,5 @@
 import os
+import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 from scipy.stats import mode
@@ -14,16 +15,6 @@ N_BANDS = 12          # Sentinel-2 bands per timestep
 LABEL_OFFSET = 12    # 13th band
 GROUND_CLASS = 3     # ground / ignore class
 RANDOM_STATE = 42
-
-TRAIN_TIFF_FILES = [
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TRAIN\CLIPPED\DROUGHT_TRAIN_CLIPPED\DROUGHT_TRAIN_CLIPPED.tif",
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TRAIN\CLIPPED\DFB_TRAIN_CLIPPED\DFB_TRAIN_CLIPPED.tif"
-]
-
-TEST_TIFF_FILES = [
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DROUGHT_TEST_CLIPPED\DROUGHT_TEST_CLIPPED.tif",
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DFB_TEST_CLIPPED\DFB_TEST_CLIPPED.tif"
-]
 
 CLASS_NAMES = ["Healthy", "DFB", "Drought"]
 
@@ -98,63 +89,67 @@ def extract_temporal_features(data):
 # LOAD MULTIPLE RASTERS
 # =====================================================
 
-def load_and_stack(tiff_list, tag="dataset"):
-    X_all, y_all = [], []
+path = r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TRAIN\CLIPPED\DROUGHT_TRAIN_CLIPPED\DROUGHT_TRAIN_CLIPPED.tif"
+    # r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TRAIN\CLIPPED\DFB_TRAIN_CLIPPED\DFB_TRAIN_CLIPPED.tif"
+    # r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DROUGHT_TEST_CLIPPED\DROUGHT_TEST_CLIPPED.tif",
+    # r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DFB_TEST_CLIPPED\DFB_TEST_CLIPPED.tif"
 
-    print(f"\nLoading {tag} data...")
-    for path in tiff_list:
-        name = os.path.basename(path)
-        print(f"  {name}")
+name = os.path.basename(path)
+print(f"  {name}")
 
-        with rasterio.open(path) as src:
-            data = src.read().astype(np.float32)
-            data[data == -1] = np.nan
-
-        X, y = extract_temporal_features(data)
-        X_all.append(X)
-        y_all.append(y)
-
-    return np.vstack(X_all), np.concatenate(y_all)
+with rasterio.open(path) as src:
+    data = src.read().astype(np.float32)
+    data[data == -1] = np.nan
 
 
-# =====================================================
-# MAIN
-# =====================================================
+bands, nrows, ncols = data.shape
 
-def main():
-    X_train, y_train = load_and_stack(TRAIN_TIFF_FILES, "training")
-    X_test, y_test = load_and_stack(TEST_TIFF_FILES, "test")
+label_img = data[LABEL_OFFSET]
 
-    print(f"\nTrain samples: {X_train.shape}")
-    print(f"Test samples:  {X_test.shape}")
+classes = np.unique(label_img)
 
-    clf = RandomForestClassifier(
-        n_estimators=300,
-        min_samples_leaf=2,
-        n_jobs=-1,
-        random_state=RANDOM_STATE
+# Indices of label bands
+label_idx = np.arange(LABEL_OFFSET, bands, N_BANDS + 1)
+
+# Boolean mask for all non-label bands
+band_mask = np.ones(bands, dtype=bool)
+band_mask[label_idx] = False
+
+ini, fin = 0, bands - len(label_idx)
+# ini, fin = 2000, 2100
+
+plt.figure(figsize=(12, 6))
+
+for cls in classes:
+    if np.isnan(cls):
+        continue
+
+    # Get all pixels of this class
+    rows, cols = np.where(np.isclose(label_img, cls))
+    if rows.size == 0:
+        continue
+
+    # Extract time series for all pixels in this class (non-label bands)
+    ts_class = data[band_mask][:, rows, cols]  # shape: (time, num_pixels)
+    ts_class = ts_class[ini:fin]
+
+    # Compute mean and standard deviation across pixels
+    ts_mean = np.mean(ts_class, axis=1)
+    ts_std = np.std(ts_class, axis=1)
+
+    # Plot mean
+    plt.plot(ts_mean, label=f'Class {int(cls)}')
+
+    # Plot deviation bands (mean ± std)
+    plt.fill_between(
+        np.arange(len(ts_mean)),
+        ts_mean - ts_std,
+        ts_mean + ts_std,
+        alpha=0.3
     )
 
-    print("\nTraining Random Forest...")
-    clf.fit(X_train, y_train)
-
-    print("\nEvaluating...")
-    y_pred = clf.predict(X_test)
-
-    print("\nConfusion Matrix:")
-    print(confusion_matrix(y_test, y_pred))
-
-    print("\nClassification Report:")
-    print(classification_report(
-        y_test, y_pred,
-        target_names=CLASS_NAMES,
-        digits=4
-    ))
-
-
-# =====================================================
-# ENTRY POINT
-# =====================================================
-
-if __name__ == "__main__":
-    main()
+plt.legend()
+plt.xlabel("Time")
+plt.ylabel("Value")
+plt.title("Average time series per class ± std deviation")
+plt.show()
