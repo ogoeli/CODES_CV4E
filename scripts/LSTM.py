@@ -1,14 +1,16 @@
+# =====================================================
+# LSTM for Sentinel-2 Time Series Pixel Classification
+# =====================================================
+
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import numpy as np
 import rasterio
-from scipy.stats import mode
-
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
-from sklearn.metrics import classification_report, confusion_matrix
+from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import classification_report
 
 # =====================================================
 # CONFIG
@@ -25,94 +27,156 @@ TEST_TIFF_FILES = [
 ]
 
 N_BANDS = 12
-LABEL_OFFSET = 12
-GROUND_CLASS = 3
-CLASS_NAMES = ["Healthy", "DFB", "Drought"]
-BATCH_SIZE = 4096
-EPOCHS = 10
+EPOCHS = 15
+BATCH_SIZE = 256
 LR = 1e-3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-RANDOM_STATE = 42
 
 # =====================================================
-# DATA LOADER
+# DATA UTILITIES
 # =====================================================
 
-class PixelTimeSeriesDataset(Dataset):
+def load_multiband_raster(path):
+    with rasterio.open(path) as src:
+        data = src.read().astype(np.float32)
+    data[data == -1] = np.nan
+    return data
+
+
+def extract_sequences(data):
+    """
+    Returns:
+        X: (N, T, 12)
+        y: (N,)
+    """
+    bands, rows, cols = data.shape
+    step = N_BANDS + 1
+    T = bands // step
+
+    data = data.reshape(T, step, rows, cols)
+    X = data[:, :N_BANDS, :, :]
+    labels = data[:, -1, :, :]
+
+    # reshape pixels
+    X = X.transpose(2, 3, 0, 1).reshape(-1, T, N_BANDS)
+    labels = labels.transpose(1, 2, 0).reshape(-1, T)
+
+    # --- label majority vote ---
+    y = np.zeros(labels.shape[0]) * np.nan
+
+    for i in range(labels.shape[0]):
+        vals = labels[i]
+        vals = vals[~np.isnan(vals)]
+        if len(vals) > 0:
+            y[i] = np.bincount(vals.astype(int)).argmax()
+
+    # --- masking ---
+    bad_X = np.isnan(X).any(axis=(1, 2))
+    bad_y = np.isnan(y)
+
+    mask = ~bad_X & ~bad_y
+
+    X = X[mask]
+    y = y[mask].astype(int)
+
+    return X, y
+
+
+def load_and_stack(files, tag="data"):
+    X_all, y_all = [], []
+
+    print(f"\nLoading {tag} data...")
+    for f in files:
+        print(" ", os.path.basename(f))
+        data = load_multiband_raster(f)
+        X, y = extract_sequences(data)
+        X_all.append(X)
+        y_all.append(y)
+
+    X = np.vstack(X_all)
+    y = np.concatenate(y_all)
+
+    # --- remap labels ---
+    uniq = np.unique(y)
+    print("Original labels:", uniq)
+
+    label_map = {lbl: i for i, lbl in enumerate(uniq)}
+    y = np.vectorize(label_map.get)(y)
+
+    print("Mapped labels:", np.unique(y))
+    return X, y
+
+
+# =====================================================
+# DATASET
+# =====================================================
+
+class PixelSequenceDataset(Dataset):
     def __init__(self, X, y):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.long)
-        
+
     def __len__(self):
-        return self.X.shape[0]
-    
+        return len(self.y)
+
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
 
+
 # =====================================================
-# LSTM MODEL
+# MODEL
 # =====================================================
 
-class PixelLSTM(nn.Module):
-    def __init__(self, n_bands, hidden_size=64, n_classes=3):
+class LSTMClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim=64, num_classes=2):
         super().__init__()
-        self.lstm = nn.LSTM(input_size=n_bands, hidden_size=hidden_size,
-                            batch_first=True, bidirectional=True)
-        self.fc = nn.Linear(hidden_size*2, n_classes)
-        
+        self.lstm = nn.LSTM(
+            input_dim,
+            hidden_dim,
+            batch_first=True
+        )
+        self.fc = nn.Linear(hidden_dim, num_classes)
+
     def forward(self, x):
-        # x: batch x time x bands
-        _, (h_n, _) = self.lstm(x)
-        # bidirectional → concat forward/backward
-        h = torch.cat([h_n[0], h_n[1]], dim=1)
-        out = self.fc(h)
-        return out
+        _, (h, _) = self.lstm(x)
+        return self.fc(h[-1])
+
 
 # =====================================================
-# FEATURE EXTRACTION (KEEP TIME ORDER)
+# TRAINING
 # =====================================================
 
-def extract_sequence_features(data):
-    """
-    Returns:
-        X: n_pixels x time x bands
-        y: n_pixels
-    """
-    bands, rows, cols = data.shape
-    label_idx = np.arange(LABEL_OFFSET, bands, N_BANDS+1)
-    
-    # modal label across time
-    labels_all = data[label_idx].reshape(len(label_idx), -1)
-    y = mode(labels_all, axis=0, keepdims=False).mode.astype(int)
-    
-    # remove label bands
-    feature_data = np.delete(data, label_idx, axis=0)
-    n_time = len(label_idx)
-    
-    # reshape to (pixels, time, bands)
-    feature_data = feature_data.reshape(n_time, N_BANDS, rows, cols)
-    feature_data = feature_data.transpose(2,3,0,1) # rows,cols,time,bands
-    X = feature_data.reshape(-1, n_time, N_BANDS)
-    
-    # mask
-    has_nan = np.isnan(X).any(axis=2)
-    is_ground = (y == GROUND_CLASS)
-    mask = ~has_nan & ~is_ground
-    
-    return X[mask], y[mask]
+def train_epoch(model, loader, optimizer, criterion):
+    model.train()
+    total_loss = 0
 
-def load_and_stack(tiff_list, tag="dataset"):
-    X_all, y_all = [], []
-    print(f"\nLoading {tag} data...")
-    for path in tiff_list:
-        print(f"  {os.path.basename(path)}")
-        with rasterio.open(path) as src:
-            data = src.read().astype(np.float32)
-            data[data==-1] = np.nan
-        X, y = extract_sequence_features(data)
-        X_all.append(X)
-        y_all.append(y)
-    return np.vstack(X_all), np.concatenate(y_all)
+    for X, y in loader:
+        X, y = X.to(DEVICE), y.to(DEVICE)
+
+        optimizer.zero_grad()
+        preds = model(X)
+        loss = criterion(preds, y)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    return total_loss / len(loader)
+
+
+def evaluate(model, loader):
+    model.eval()
+    y_true, y_pred = [], []
+
+    with torch.no_grad():
+        for X, y in loader:
+            X = X.to(DEVICE)
+            preds = model(X).argmax(1).cpu()
+            y_true.append(y)
+            y_pred.append(preds)
+
+    return torch.cat(y_true), torch.cat(y_pred)
+
 
 # =====================================================
 # MAIN
@@ -120,55 +184,31 @@ def load_and_stack(tiff_list, tag="dataset"):
 
 def main():
     X_train, y_train = load_and_stack(TRAIN_TIFF_FILES, "training")
-    X_test, y_test = load_and_stack(TEST_TIFF_FILES, "test")
-    
-    print(f"Train: {X_train.shape}, Test: {X_test.shape}")
-    
-    train_dataset = PixelTimeSeriesDataset(X_train, y_train)
-    test_dataset = PixelTimeSeriesDataset(X_test, y_test)
-    
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    
-    model = PixelLSTM(N_BANDS).to(DEVICE)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    
-    # Training loop
-    for epoch in range(EPOCHS):
-        model.train()
-        total_loss = 0
-        for X_batch, y_batch in train_loader:
-            X_batch, y_batch = X_batch.to(DEVICE), y_batch.to(DEVICE)
-            optimizer.zero_grad()
-            logits = model(X_batch)
-            loss = criterion(logits, y_batch)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item() * X_batch.size(0)
-        print(f"Epoch {epoch+1}/{EPOCHS} - Loss: {total_loss/len(train_dataset):.4f}")
-    
-    # Evaluation
-    model.eval()
-    y_pred_list = []
-    y_true_list = []
-    with torch.no_grad():
-        for X_batch, y_batch in test_loader:
-            X_batch = X_batch.to(DEVICE)
-            logits = model(X_batch)
-            preds = torch.argmax(logits, dim=1).cpu().numpy()
-            y_pred_list.append(preds)
-            y_true_list.append(y_batch.numpy())
-    
-    y_true_all = np.concatenate(y_true_list)
-    y_pred_all = np.concatenate(y_pred_list)
-    
-    print("\nClassification Report:")
-    print(classification_report(y_true_all, y_pred_all, target_names=CLASS_NAMES, digits=4))
-    
-    cm = confusion_matrix(y_true_all, y_pred_all)
-    print("\nConfusion Matrix:")
-    print(cm)
+    X_test, y_test = load_and_stack(TEST_TIFF_FILES, "testing")
 
-if __name__=="__main__":
+    train_ds = PixelSequenceDataset(X_train, y_train)
+    test_ds = PixelSequenceDataset(X_test, y_test)
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE)
+
+    model = LSTMClassifier(
+        input_dim=N_BANDS,
+        hidden_dim=64,
+        num_classes=len(np.unique(y_train))
+    ).to(DEVICE)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    criterion = nn.CrossEntropyLoss()
+
+    for epoch in range(EPOCHS):
+        loss = train_epoch(model, train_loader, optimizer, criterion)
+        print(f"Epoch {epoch+1}/{EPOCHS} — Loss: {loss:.4f}")
+
+    y_true, y_pred = evaluate(model, test_loader)
+    print("\nTest performance:")
+    print(classification_report(y_true, y_pred))
+
+
+if __name__ == "__main__":
     main()
