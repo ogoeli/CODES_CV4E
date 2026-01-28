@@ -1,7 +1,9 @@
 import os
+import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
 from scipy.stats import mode
+import seaborn as sns
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
@@ -24,45 +26,32 @@ TEST_TIFF_FILES = [
     r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TEST\DFB_TEST\MERGED\DFB_TEST.tif",
 ]
 
-CLASS_NAMES = ["Healthy", "DFB", "Drought"]
-VALID_CLASSES = [1, 2, 3]  # Map to CLASS_NAMES indices
+CLASS_NAMES = ["Healthy", "DFB", "Drought", "Ground"]
+VALID_CLASSES = [0, 1, 2, 3]
 
 # =====================================================
 # FEATURE EXTRACTION
 # =====================================================
 
 def extract_temporal_features(data):
-    """
-    Extract temporal features from raster data.
-    data shape: (bands, rows, cols)
-    """
     bands, rows, cols = data.shape
-
-    # Number of dates (time steps)
     n_time = bands // (N_BANDS + 1)  # 4 spectral + 1 label per date
-
-    # Identify label bands (the last band of each date)
     label_idx = np.arange(N_BANDS, bands, N_BANDS + 1)
     labels_all = data[label_idx].reshape(len(label_idx), -1)
 
     # Modal label across time
     y = mode(labels_all, axis=0, keepdims=False).mode.astype(int)
-
     drift = np.mean(np.any(labels_all != labels_all[0], axis=0))
     print(f"    Label drift fraction: {drift:.4f}")
 
-    # Remove label bands to keep only spectral features
     feature_data = np.delete(data, label_idx, axis=0)
-
-    # Reshape → (n_time, N_BANDS, rows, cols)
     feature_data = feature_data.reshape(n_time, N_BANDS, rows, cols)
-    feature_data = feature_data.transpose(2, 3, 1, 0)  # → (rows, cols, bands, time)
-    feature_data = feature_data.reshape(-1, N_BANDS, n_time)  # → (pixels, bands, time)
+    feature_data = feature_data.transpose(2, 3, 1, 0)
+    feature_data = feature_data.reshape(-1, N_BANDS, n_time)
 
-    # Mask invalid pixels
+    # Only mask NaN pixels, include all classes
     has_nan = np.isnan(feature_data).any(axis=(1, 2))
-    is_ground = (y == GROUND_CLASS)
-    mask = ~has_nan & ~is_ground & np.isin(y, VALID_CLASSES)
+    mask = ~has_nan
 
     ts = feature_data[mask]
     y = y[mask]
@@ -71,50 +60,41 @@ def extract_temporal_features(data):
     # TEMPORAL FEATURES
     # =========================
     feats = []
-
     feats.append(ts.mean(axis=2))
     feats.append(ts.std(axis=2))
     feats.append(ts.min(axis=2))
     feats.append(ts.max(axis=2))
     feats.append(ts.max(axis=2) - ts.min(axis=2))  # amplitude
 
-    # Trend (robust linear proxy)
     t = np.arange(ts.shape[2])
     t = (t - t.mean()) / t.std()
     feats.append(np.mean(ts * t, axis=2))
 
-    # NDVI features (Red = band 2, NIR = band 3)
     red = ts[:, 2, :]
     nir = ts[:, 3, :]
     ndvi = (nir - red) / (nir + red + 1e-6)
-
     feats.append(ndvi.mean(axis=1, keepdims=True))
     feats.append(ndvi.std(axis=1, keepdims=True))
 
     X = np.concatenate(feats, axis=1)
-
     return X, y
 
 # =====================================================
-# LOAD MULTIPLE RASTERS
+# LOAD AND STACK MULTIPLE RASTERS
 # =====================================================
 
 def load_and_stack(tiff_list, tag="dataset"):
     X_all, y_all = [], []
-
     print(f"\nLoading {tag} data...")
     for path in tiff_list:
         name = os.path.basename(path)
         print(f"  {name}")
-
         with rasterio.open(path) as src:
             data = src.read().astype(np.float32)
             data[data == -1] = np.nan
-
         X, y = extract_temporal_features(data)
         X_all.append(X)
         y_all.append(y)
-
     return np.vstack(X_all), np.concatenate(y_all)
 
 # =====================================================
@@ -124,11 +104,6 @@ def load_and_stack(tiff_list, tag="dataset"):
 def main():
     X_train, y_train = load_and_stack(TRAIN_TIFF_FILES, "training")
     X_test, y_test = load_and_stack(TEST_TIFF_FILES, "test")
-
-    # Filter test data to only valid classes
-    mask_test = np.isin(y_test, VALID_CLASSES)
-    y_test = y_test[mask_test]
-    X_test = X_test[mask_test]
 
     print(f"\nTrain samples: {X_train.shape}")
     print(f"Test samples:  {X_test.shape}")
@@ -146,13 +121,11 @@ def main():
     print("\nEvaluating...")
     y_pred = clf.predict(X_test)
 
-    # Filter predictions to valid classes
-    mask_pred = np.isin(y_pred, VALID_CLASSES)
-    y_pred = y_pred[mask_pred]
-    y_test = y_test[mask_pred]
+    # Compute confusion matrix
+    cm = confusion_matrix(y_test, y_pred, labels=VALID_CLASSES)
 
-    print("\nConfusion Matrix:")
-    print(confusion_matrix(y_test, y_pred))
+    print("\nConfusion Matrix (numeric):")
+    print(cm)
 
     print("\nClassification Report:")
     print(classification_report(
@@ -162,9 +135,18 @@ def main():
         digits=4
     ))
 
-# =====================================================
-# ENTRY POINT
-# =====================================================
+    # =========================
+    # VISUALIZE CONFUSION MATRIX
+    # =========================
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES)
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix")
+    plt.tight_layout()
+    plt.show()
+
 
 if __name__ == "__main__":
     main()
