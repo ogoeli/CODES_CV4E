@@ -10,22 +10,22 @@ from sklearn.metrics import classification_report, confusion_matrix
 # CONFIGURATION
 # =====================================================
 
-N_BANDS = 12          # Sentinel-2 bands per timestep
-LABEL_OFFSET = 12    # 13th band
-GROUND_CLASS = 3     # ground / ignore class
+N_BANDS = 4          # Spectral bands per timestep
+GROUND_CLASS = 3     # Ground / ignore class
 RANDOM_STATE = 42
 
 TRAIN_TIFF_FILES = [
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TRAIN\CLIPPED\DROUGHT_TRAIN_CLIPPED\DROUGHT_TRAIN_CLIPPED.tif",
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TRAIN\CLIPPED\DFB_TRAIN_CLIPPED\DFB_TRAIN_CLIPPED.tif"
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TRAIN\DFB_TRAIN\MERGED\DFB_TRAIN.tif",
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TRAIN\DROUGHT_TRAIN\MERGED\DROUGHT_TRAIN.tif"
 ]
 
 TEST_TIFF_FILES = [
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DROUGHT_TEST_CLIPPED\DROUGHT_TEST_CLIPPED.tif",
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\SENTINEL_TIME_SERIES\ROI\TEST\CLIPPED\DFB_TEST_CLIPPED\DFB_TEST_CLIPPED.tif"
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TEST\DROUGHT_TEST\MERGED\DROUGHT_TEST.tif",
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TEST\DFB_TEST\MERGED\DFB_TEST.tif",
 ]
 
 CLASS_NAMES = ["Healthy", "DFB", "Drought"]
+VALID_CLASSES = [1, 2, 3]  # Map to CLASS_NAMES indices
 
 # =====================================================
 # FEATURE EXTRACTION
@@ -33,34 +33,36 @@ CLASS_NAMES = ["Healthy", "DFB", "Drought"]
 
 def extract_temporal_features(data):
     """
+    Extract temporal features from raster data.
     data shape: (bands, rows, cols)
     """
     bands, rows, cols = data.shape
 
-    # Identify label bands
-    label_idx = np.arange(LABEL_OFFSET, bands, N_BANDS + 1)
+    # Number of dates (time steps)
+    n_time = bands // (N_BANDS + 1)  # 4 spectral + 1 label per date
 
+    # Identify label bands (the last band of each date)
+    label_idx = np.arange(N_BANDS, bands, N_BANDS + 1)
     labels_all = data[label_idx].reshape(len(label_idx), -1)
 
-    # --- FIX: modal label across time ---
+    # Modal label across time
     y = mode(labels_all, axis=0, keepdims=False).mode.astype(int)
 
     drift = np.mean(np.any(labels_all != labels_all[0], axis=0))
     print(f"    Label drift fraction: {drift:.4f}")
 
-    # Remove label bands
+    # Remove label bands to keep only spectral features
     feature_data = np.delete(data, label_idx, axis=0)
-    n_time = len(label_idx)
 
-    # Reshape → (pixels, bands, time)
+    # Reshape → (n_time, N_BANDS, rows, cols)
     feature_data = feature_data.reshape(n_time, N_BANDS, rows, cols)
-    feature_data = feature_data.transpose(2, 3, 1, 0)
-    feature_data = feature_data.reshape(-1, N_BANDS, n_time)
+    feature_data = feature_data.transpose(2, 3, 1, 0)  # → (rows, cols, bands, time)
+    feature_data = feature_data.reshape(-1, N_BANDS, n_time)  # → (pixels, bands, time)
 
     # Mask invalid pixels
     has_nan = np.isnan(feature_data).any(axis=(1, 2))
     is_ground = (y == GROUND_CLASS)
-    mask = ~has_nan & ~is_ground
+    mask = ~has_nan & ~is_ground & np.isin(y, VALID_CLASSES)
 
     ts = feature_data[mask]
     y = y[mask]
@@ -81,9 +83,9 @@ def extract_temporal_features(data):
     t = (t - t.mean()) / t.std()
     feats.append(np.mean(ts * t, axis=2))
 
-    # NDVI features
-    red = ts[:, 3, :]
-    nir = ts[:, 7, :]
+    # NDVI features (Red = band 2, NIR = band 3)
+    red = ts[:, 2, :]
+    nir = ts[:, 3, :]
     ndvi = (nir - red) / (nir + red + 1e-6)
 
     feats.append(ndvi.mean(axis=1, keepdims=True))
@@ -92,7 +94,6 @@ def extract_temporal_features(data):
     X = np.concatenate(feats, axis=1)
 
     return X, y
-
 
 # =====================================================
 # LOAD MULTIPLE RASTERS
@@ -116,7 +117,6 @@ def load_and_stack(tiff_list, tag="dataset"):
 
     return np.vstack(X_all), np.concatenate(y_all)
 
-
 # =====================================================
 # MAIN
 # =====================================================
@@ -124,6 +124,11 @@ def load_and_stack(tiff_list, tag="dataset"):
 def main():
     X_train, y_train = load_and_stack(TRAIN_TIFF_FILES, "training")
     X_test, y_test = load_and_stack(TEST_TIFF_FILES, "test")
+
+    # Filter test data to only valid classes
+    mask_test = np.isin(y_test, VALID_CLASSES)
+    y_test = y_test[mask_test]
+    X_test = X_test[mask_test]
 
     print(f"\nTrain samples: {X_train.shape}")
     print(f"Test samples:  {X_test.shape}")
@@ -141,6 +146,11 @@ def main():
     print("\nEvaluating...")
     y_pred = clf.predict(X_test)
 
+    # Filter predictions to valid classes
+    mask_pred = np.isin(y_pred, VALID_CLASSES)
+    y_pred = y_pred[mask_pred]
+    y_test = y_test[mask_pred]
+
     print("\nConfusion Matrix:")
     print(confusion_matrix(y_test, y_pred))
 
@@ -148,9 +158,9 @@ def main():
     print(classification_report(
         y_test, y_pred,
         target_names=CLASS_NAMES,
+        labels=VALID_CLASSES,
         digits=4
     ))
-
 
 # =====================================================
 # ENTRY POINT

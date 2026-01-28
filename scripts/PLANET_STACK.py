@@ -45,7 +45,8 @@ band_names = []
 for idx, f in enumerate(planet_files, start=1):
     with rasterio.open(f) as src:
         # Planet bands as float32
-        planet_data = src.read().astype(np.float32)
+        planet_data = src.read([1, 2, 3, 4]).astype(np.float32)
+
 
         # Resample NAIP if needed
         if planet_data.shape[1:] != naip_data.shape:
@@ -146,7 +147,8 @@ band_names = []
 for idx, f in enumerate(planet_files, start=1):
     with rasterio.open(f) as src:
         # Planet bands as float32
-        planet_data = src.read().astype(np.float32)
+        planet_data = src.read([1, 2, 3, 4]).astype(np.float32)
+
 
         # Resample NAIP if needed
         if planet_data.shape[1:] != naip_data.shape:
@@ -245,7 +247,8 @@ band_names = []
 for idx, f in enumerate(planet_files, start=1):
     with rasterio.open(f) as src:
         # Planet bands as float32
-        planet_data = src.read().astype(np.float32)
+        planet_data = src.read([1, 2, 3, 4]).astype(np.float32)
+
 
         # Resample NAIP if needed
         if planet_data.shape[1:] != naip_data.shape:
@@ -345,7 +348,8 @@ band_names = []
 for idx, f in enumerate(planet_files, start=1):
     with rasterio.open(f) as src:
         # Planet bands as float32
-        planet_data = src.read().astype(np.float32)
+        planet_data = src.read([1, 2, 3, 4]).astype(np.float32)
+
 
         # Resample NAIP if needed
         if planet_data.shape[1:] != naip_data.shape:

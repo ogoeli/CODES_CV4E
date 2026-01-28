@@ -16,7 +16,8 @@ TIFF_FILES = [
     r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TRAIN\DROUGHT_TRAIN\MERGED\DROUGHT_TRAIN.tif"
 ]
 
-BANDS_PER_DATE = 5        # B1–B4 + class
+CLASS_BAND_IDX = 4        # 0-based
+BANDS_PER_DATE = 5
 SPECTRAL_BANDS = 4
 N_COMPONENTS = 4
 NODATA_VALUE = -1
@@ -36,45 +37,32 @@ for path in TIFF_FILES:
         img = src.read().astype("float32")
         bands, rows, cols = img.shape
 
-        # -------- Sanity check --------
-        if bands % BANDS_PER_DATE != 0:
-            raise ValueError(
-                f"{os.path.basename(path)} has {bands} bands "
-                f"(not divisible by {BANDS_PER_DATE})"
-            )
+        # -------- Extract class band (NO temporal aggregation!) --------
+        class_band = img[CLASS_BAND_IDX].reshape(-1)
 
-        n_dates = bands // BANDS_PER_DATE
-
-        # -------- Reshape by date --------
-        img = img.reshape(n_dates, BANDS_PER_DATE, rows, cols)
-
-        # -------- Split spectral + class --------
-        spectral = img[:, :SPECTRAL_BANDS, :, :]     # B1–B4
-        class_band = img[:, SPECTRAL_BANDS, :, :]    # band 5
-
+        # -------- Extract spectral bands only --------
+        spectral_idx = [i for i in range(bands) if (i + 1) % BANDS_PER_DATE != 0]
+        spectral = img[spectral_idx]
         spectral[spectral == NODATA_VALUE] = np.nan
 
-        # -------- Temporal median (spectral only) --------
+        # -------- Temporal median on spectral bands ONLY --------
+        n_dates = spectral.shape[0] // SPECTRAL_BANDS
+        spectral = spectral.reshape(n_dates, SPECTRAL_BANDS, rows, cols)
         spectral_median = np.nanmedian(spectral, axis=0)
 
         # -------- Flatten --------
         X = spectral_median.reshape(SPECTRAL_BANDS, -1).T
 
-        # -------- Use first class layer (they should match) --------
-        y = class_band[0].reshape(-1)
-
         # -------- Valid pixels --------
         valid_mask = ~np.any(np.isnan(X), axis=1)
-        X = X[valid_mask]
-        y = y[valid_mask]
+        X_valid = X[valid_mask]
+        class_valid = class_band[valid_mask]
 
         # -------- Keep only known classes --------
-        keep = np.isin(y, [0, 1, 2])
-        all_pixels.append(X[keep])
-        all_classes.append(y[keep])
+        keep = np.isin(class_valid, [0, 1, 2])
+        all_pixels.append(X_valid[keep])
+        all_classes.append(class_valid[keep])
         all_split.append(np.full(np.sum(keep), split))
-
-        print(f"{os.path.basename(path)} | dates={n_dates} | pixels kept={np.sum(keep)}")
 
 # ================= STACK =================
 X = np.vstack(all_pixels)
@@ -87,11 +75,11 @@ X_scaled = StandardScaler().fit_transform(X)
 pca = PCA(n_components=N_COMPONENTS)
 X_pca = pca.fit_transform(X_scaled)
 
-print("\nPCA completed")
+print("PCA completed")
 print("Explained variance ratio:", np.round(pca.explained_variance_ratio_, 4))
 
 # ================= SANITY CHECK =================
-print("\nClass counts:")
+print("Class counts:")
 unique, counts = np.unique(y_class, return_counts=True)
 print(dict(zip(unique, counts)))
 
@@ -122,5 +110,66 @@ plt.legend(markerscale=2)
 plt.grid(True)
 plt.show()
 
-print("\nFirst 3 explained variances:")
-print(np.round(pca.explained_variance_ratio_[:3], 4))
+
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+# ================= LDA =================
+lda = LinearDiscriminantAnalysis(n_components=2)
+X_lda = lda.fit_transform(X_scaled, y_class)
+
+print("LDA completed")
+
+
+class_colors = {0: "green", 1: "red", 2: "orange"}
+class_names  = {0: "Healthy", 1: "DFB", 2: "Drought"}
+split_markers = {0: "o", 1: "^"}  # train/test
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# -------- PCA --------
+for cls in [0, 1, 2]:
+    for split in [0, 1]:
+        mask = (y_class == cls) & (y_split == split)
+        axes[0].scatter(
+            X_pca[mask, 0],
+            X_pca[mask, 1],
+            c=class_colors[cls],
+            marker=split_markers[split],
+            s=6,
+            alpha=0.6
+        )
+
+axes[0].set_title("PCA (unsupervised)")
+axes[0].set_xlabel("PC1")
+axes[0].set_ylabel("PC2")
+axes[0].grid(True)
+
+# -------- LDA --------
+for cls in [0, 1, 2]:
+    for split in [0, 1]:
+        mask = (y_class == cls) & (y_split == split)
+        axes[1].scatter(
+            X_lda[mask, 0],
+            X_lda[mask, 1],
+            c=class_colors[cls],
+            marker=split_markers[split],
+            s=6,
+            alpha=0.6,
+            label=f"{class_names[cls]} - {'Train' if split == 0 else 'Test'}"
+        )
+
+axes[1].set_title("LDA (supervised)")
+axes[1].set_xlabel("LD1")
+axes[1].set_ylabel("LD2")
+axes[1].grid(True)
+
+handles, labels = axes[1].get_legend_handles_labels()
+fig.legend(handles[:6], labels[:6], loc="lower center", ncol=3)
+
+plt.tight_layout()
+plt.show()
+
+
+#Check class centroids in LDA space
+#for cls in [0,1,2]:
+#    print(cls, X_lda[y_class == cls].mean(axis=0))
