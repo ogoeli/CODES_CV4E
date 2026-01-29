@@ -4,6 +4,7 @@ import numpy as np
 import rasterio
 from scipy.stats import mode
 import seaborn as sns
+from collections import Counter
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix
@@ -11,19 +12,18 @@ from sklearn.metrics import classification_report, confusion_matrix
 # =====================================================
 # CONFIGURATION
 # =====================================================
-
 N_BANDS = 4          # Spectral bands per timestep
 GROUND_CLASS = 3     # Ground / ignore class
 RANDOM_STATE = 42
 
 TRAIN_TIFF_FILES = [
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TRAIN\DFB_TRAIN\MERGED\DFB_TRAIN.tif",
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TRAIN\DROUGHT_TRAIN\MERGED\DROUGHT_TRAIN.tif"
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\STACKED_OUTPUT\DFB_TRAIN_stack.tif",
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\STACKED_OUTPUT\DROUGHT_TRAIN_stack.tif"
 ]
 
 TEST_TIFF_FILES = [
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TEST\DROUGHT_TEST\MERGED\DROUGHT_TEST.tif",
-    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TEST\DFB_TEST\MERGED\DFB_TEST.tif",
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\STACKED_OUTPUT\DFB_TEST_stack.tif",
+    r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\STACKED_OUTPUT\DROUGHT_TEST_stack.tif"
 ]
 
 CLASS_NAMES = ["Healthy", "DFB", "Drought", "Ground"]
@@ -32,7 +32,6 @@ VALID_CLASSES = [0, 1, 2, 3]
 # =====================================================
 # FEATURE EXTRACTION
 # =====================================================
-
 def extract_temporal_features(data):
     bands, rows, cols = data.shape
     n_time = bands // (N_BANDS + 1)  # 4 spectral + 1 label per date
@@ -82,7 +81,6 @@ def extract_temporal_features(data):
 # =====================================================
 # LOAD AND STACK MULTIPLE RASTERS
 # =====================================================
-
 def load_and_stack(tiff_list, tag="dataset"):
     X_all, y_all = [], []
     print(f"\nLoading {tag} data...")
@@ -98,12 +96,46 @@ def load_and_stack(tiff_list, tag="dataset"):
     return np.vstack(X_all), np.concatenate(y_all)
 
 # =====================================================
+# UNDERSAMPLE MAJORITY CLASS
+# =====================================================
+def undersample_majority(X, y, majority_class=0, random_state=42):
+    counts = Counter(y)
+    print("Class distribution before undersampling:", counts)
+
+    # Determine total minority samples
+    minority_classes = [cls for cls in counts.keys() if cls != majority_class]
+    n_samples = sum([counts[cls] for cls in minority_classes])
+
+    # Indices per class
+    indices = {cls: np.where(y == cls)[0] for cls in counts.keys()}
+
+    # Undersample majority
+    np.random.seed(random_state)
+    majority_idx = np.random.choice(indices[majority_class], size=n_samples, replace=False)
+
+    # Combine all indices
+    final_idx = majority_idx
+    for cls in minority_classes:
+        final_idx = np.concatenate([final_idx, indices[cls]])
+
+    np.random.shuffle(final_idx)
+    X_balanced = X[final_idx]
+    y_balanced = y[final_idx]
+
+    print("Class distribution after undersampling:", Counter(y_balanced))
+    return X_balanced, y_balanced
+
+# =====================================================
 # MAIN
 # =====================================================
-
 def main():
     X_train, y_train = load_and_stack(TRAIN_TIFF_FILES, "training")
     X_test, y_test = load_and_stack(TEST_TIFF_FILES, "test")
+
+    # =====================
+    # UNDERSAMPLE MAJORITY
+    # =====================
+    X_train, y_train = undersample_majority(X_train, y_train, majority_class=0)
 
     print(f"\nTrain samples: {X_train.shape}")
     print(f"Test samples:  {X_test.shape}")
@@ -146,7 +178,6 @@ def main():
     plt.title("Confusion Matrix")
     plt.tight_layout()
     plt.show()
-
 
 if __name__ == "__main__":
     main()

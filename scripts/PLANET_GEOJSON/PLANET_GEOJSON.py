@@ -33,9 +33,9 @@ geojson_files = [
 output_stack = r"C:\Users\ope4\OneDrive - Northern Arizona University\Desktop\RESEARCH\PRO_DEVE\CV4E\GitIgnore\PLANET\TEST\DFB_TEST\MERGED\DFB_TEST.tif"
 os.makedirs(os.path.dirname(output_stack), exist_ok=True)
 
-# ===============================
-# STEP 1: Reference Planet image
-# ===============================
+# =========================
+# Reference Planet image
+# =========================
 with rasterio.open(planet_files[0]) as src:
     transform = src.transform
     width = src.width
@@ -43,76 +43,56 @@ with rasterio.open(planet_files[0]) as src:
     crs = src.crs
     meta = src.meta.copy()
 
-# ===============================
-# STEP 2: Rasterize GeoJSON annotations
-# ===============================
-all_shapes = []
-for file, class_id in geojson_files:
-    gdf = gpd.read_file(file).to_crs(crs)  # match CRS to Planet
-    shapes = [(geom, class_id) for geom in gdf.geometry]
-    all_shapes.extend(shapes)
+# =========================
+# Load GeoJSON and rasterize once
+# =========================
+gdf = gpd.read_file(geojson_files).to_crs(crs)
+
+# Replace 'class_property' with the property in your GeoJSON that contains the class (0,1,2,3)
+shapes = [(geom, feat.class_property) for geom, feat in zip(gdf.geometry, gdf.itertuples())]
 
 label_raster = rasterize(
-    all_shapes,
+    shapes,
     out_shape=(height, width),
     transform=transform,
     fill=0,
     dtype='uint8'
 )
 
-# ===============================
-# STEP 3: Read Planet images and stack bands + repeated label
-# ===============================
+# =========================
+# Stack Planet bands + repeated label for each date
+# =========================
 all_bands = []
 band_names = []
 
-for idx, f in enumerate(planet_files, start=1):
-    with rasterio.open(f) as src:
-        planet_data = src.read([1, 2, 3, 4]).astype(np.float32)
+for idx, planet_file in enumerate(planet_files, start=1):
+    with rasterio.open(planet_file) as src:
+        planet_data = src.read([1,2,3,4]).astype(np.float32)  # 4 bands
 
-        # Resample label raster if needed
-        if (planet_data.shape[1], planet_data.shape[2]) != label_raster.shape:
-            resampled_label = np.empty((planet_data.shape[1], planet_data.shape[2]), dtype=np.uint8)
-            rasterio.warp.reproject(
-                source=label_raster,
-                destination=resampled_label,
-                src_transform=transform,
-                src_crs=crs,
-                dst_transform=src.transform,
-                dst_crs=src.crs,
-                resampling=Resampling.nearest
-            )
-            label_band = resampled_label
-        else:
-            label_band = label_raster
-
-        # Stack Planet bands + label as 5th band
-        combined = np.vstack([planet_data, label_band[np.newaxis, :, :]])
+        # repeat label raster as 5th band
+        combined = np.vstack([planet_data, label_raster[np.newaxis, :, :]])
         all_bands.append(combined)
 
-        # Band names
+        # descriptive band names
         for b in range(1, 5):
             band_names.append(f"Date{idx}_B{b}")
         band_names.append(f"Date{idx}_Label")
 
-# ===============================
-# STEP 4: Stack all dates
-# ===============================
+# =========================
+# Stack all dates into one array
+# =========================
 stacked_data = np.vstack(all_bands)
 meta.update(count=stacked_data.shape[0], dtype=np.float32)
 
-# ===============================
-# STEP 5: Save raster
-# ===============================
-with rasterio.open(output_stack, 'w', **meta) as dst:
+# =========================
+# Save output
+# =========================
+with rasterio.open(output_file, 'w', **meta) as dst:
     dst.write(stacked_data)
     for i, name in enumerate(band_names, start=1):
         dst.set_band_description(i, name)
 
-print(f"✅ Saved multi-date Planet stack with repeated label bands: {output_stack}")
-
-
-
+print(f"✅ Saved multi-date Planet stack with repeated label bands: {output_file}")
 
 
 
